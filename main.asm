@@ -33,6 +33,7 @@ data_labels:
     speed_last_tick:    dw 0        ; tick count when the speed last changed
 
     game_over:          db 0        ; 0 = running, 1 = snake hit a wall
+    game_over_label:    db 'Score: '   ; 7 characters, shown at the center on game over
 
 ;  Fills the whole 80x25 text screen with black-on-grey spaces.
 clrscr:
@@ -550,6 +551,73 @@ check_fruit_eaten:
     pop ax
     ret
 
+;  Clears the screen and shows "Score: N" in the center (row 12). The text is 7 + (number of digits) characters wide, so start column = 40 - (width / 2) keeps it centered.
+game_over_screen:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+    push di
+
+    call clrscr
+
+    ; split the score into digits (last digit first), keep them on the stack
+    mov ax, [score]
+    mov bx, 10
+    xor cx, cx                  ; cx = number of digits
+.split:
+    xor dx, dx
+    div bx                      ; ax = score / 10, dx = last digit
+    push dx
+    inc cx
+    cmp ax, 0
+    jne .split
+
+    mov di, cx                  ; di = number of digits (cx is needed for loops)
+
+    ; si = start column = 40 - (7 + digits) / 2
+    mov ax, cx
+    add ax, 7                   ; ax = total width of the text
+    shr ax, 1                   ; ax = half of the width
+    mov si, 40
+    sub si, ax                  ; si = column of the first character
+
+    ; draw "Score: " one character at a time
+    mov cx, 7                   ; 7 characters in the label
+    xor bx, bx                  ; bx = index into the label
+.label_loop:
+    mov al, [game_over_label + bx]
+    mov ah, 0x0F                ; bright white
+    push 12                     ; row 12
+    push si                     ; col
+    push ax                     ; cell
+    call draw_cell
+    inc si                      ; next column
+    inc bx                      ; next character
+    loop .label_loop
+
+    ; draw the digits (they pop back in the right order)
+    mov cx, di                  ; cx = number of digits
+.digit_loop:
+    pop ax                      ; al = digit 0 ~ 9
+    add al, '0'                 ; convert to ASCII
+    mov ah, 0x0E                ; yellow
+    push 12
+    push si
+    push ax
+    call draw_cell
+    inc si
+    loop .digit_loop
+
+    pop di
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
 ;  Waits for a number of BIOS timer ticks (1 tick is about 55 ms).
 ;  [bp+4] = ticks
 delay:
@@ -609,6 +677,7 @@ check_speed_up:
     pop ax
     ret
 
+
 ;  main subrotuine is the subroutine that manages everything 
 ;  For now: clear screen, draw snake, place and draw fruit, wait.
 main:
@@ -638,8 +707,18 @@ main:
     cmp byte [game_over], 1
     jne .game_loop                  ; keep going until a wall is hit
 
-    mov ah, 0                   ; TEMPORARY: wait for a key so we can
-    int 0x16                    ; see the snake before exiting
+    call game_over_screen           ; clear screen, score in the center
+
+    mov ax, 0x0C00                  ; empty the key buffer, so a key held while
+    int 0x21                        ; dying does not close the screen instantly
+    mov ah, 0x00                    ; wait for any key
+    int 0x16
+
+    call clrscr                     ; leave a clean screen for DOSBox
+    mov ah, 0x02                    ; int 0x10, function 2 = set cursor position
+    mov bh, 0                       ; page 0
+    xor dx, dx                      ; dh = row 0, dl = column 0
+    int 0x10
     ret
 
 
