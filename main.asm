@@ -28,6 +28,10 @@ data_labels:
     score:              dw 0        ; current score
     score_label:        db 'Score:' ; drawn on the top wall, right corner
 
+    speed_delay_ms:     dw 200      ; wait between moves in milliseconds (halved every 15 s)
+    speed_interval:     dw 273      ; 15 seconds = about 273 BIOS ticks (18.2 per second)
+    speed_last_tick:    dw 0        ; tick count when the speed last changed
+
     game_over:          db 0        ; 0 = running, 1 = snake hit a wall
 
 ;  Fills the whole 80x25 text screen with black-on-grey spaces.
@@ -552,31 +556,58 @@ delay:
     push bp
     mov bp, sp
     push ax
-    push bx
     push cx
     push dx
-    push si
 
-    mov si, [bp+4]              ; si = ticks left to wait (int 0x1a changes cx, so not cx)
-.next_tick:
-    mov ah, 0x00
-    int 0x1a                    ; dx = low word of the tick count
-    mov bx, dx                  ; bx = tick count now
-.poll:
-    mov ah, 0x00
-    int 0x1a
-    cmp dx, bx
-    je .poll                    ; same tick, keep waiting
-    dec si
-    jnz .next_tick
+    mov ax, [bp+4]              ; ax = milliseconds
+    mov cx, 1000
+    mul cx                      ; dx:ax = milliseconds * 1000 = microseconds
+    mov cx, dx                  ; cx = high word of microseconds
+    mov dx, ax                  ; dx = low word of microseconds
+    mov ah, 0x86                ; int 0x15, function 0x86 = wait
+    int 0x15
 
-    pop si
     pop dx
     pop cx
-    pop bx
     pop ax
     pop bp
     ret 2
+
+;  Starts the 15 second timer.
+init_speed:
+    push ax
+    push cx
+    push dx
+
+    mov ah, 0x00                ; int 0x1a, function 0 = read system timer
+    int 0x1a                    ; low word of the tick count is in dx
+    mov [speed_last_tick], dx   ; the 15 seconds start counting from now
+
+    pop dx
+    pop cx
+    pop ax
+    ret
+
+;  If 15 seconds have passed since the last speed change, halves the delay (the snake becomes twice as fast) but the delay never goes below speed_min_ms.
+check_speed_up:
+    push ax
+    push dx
+
+    mov ah, 0x00
+    int 0x1a                    ; dx = current tick count (low word)
+    mov ax, dx
+    sub ax, [speed_last_tick]   ; ax = ticks since the last speed change
+    cmp ax, [speed_interval]
+    jb .done                    ; less than 15 seconds, nothing to do
+
+    mov [speed_last_tick], dx   ; restart the 15 second timer
+    shr word [speed_delay_ms], 1 ; delay / 2 = twice as fast
+
+.done:
+    pop dx
+    pop cx
+    pop ax
+    ret
 
 ;  main subrotuine is the subroutine that manages everything 
 ;  For now: clear screen, draw snake, place and draw fruit, wait.
@@ -595,13 +626,15 @@ main:
     call draw_fruit
 
     call display_score             ; Shows score = 0 at the start
+    call init_speed                ; Starts the 15 second timer
 
 .game_loop:
-    push 2                          ; waits 2 ticks (about 0.1 s) between moves
+    push word [speed_delay_ms]      ; wait the current delay (gets shorter over time)
     call delay
     call get_direction              ; checks if the player pressed an arrow key?
     call move_snake                 ; move one step
     call check_fruit_eaten
+    call check_speed_up             ; every 15 seconds the snake gets twice as fast
     cmp byte [game_over], 1
     jne .game_loop                  ; keep going until a wall is hit
 
