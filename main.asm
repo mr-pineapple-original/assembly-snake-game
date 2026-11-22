@@ -11,6 +11,9 @@ data_labels:
     snake_dir_row:      dw 0        ; row change per move  (-1 up, 0, +1 down)
     snake_dir_col:      dw 1        ; column change per move (-1 left, 0, +1 right)
 
+    tail_row:           dw 0        ; where the tail was before the last move
+    tail_col:           dw 0        ; (needed to grow the snake when it eats)
+
     random_seeded:       dw 0       ; 0 = not seeded yet, 1 = already seeded
     random_seed:         dw 0       ; current value of the random generator
 
@@ -18,6 +21,12 @@ data_labels:
     fruit_attr:         db 0x0C     ; attribute: light red on black
     fruit_row:          dw 0        ; current fruit row    (set by get_fruit_position)
     fruit_col:          dw 0        ; current fruit column (set by get_fruit_position)
+
+    wall_char:          db '#'      ; character used for the walls
+    wall_attr:          db 0x03     ; attribute: cyan on black
+
+    score:              dw 0        ; current score
+    score_label:        db 'Score:' ; drawn on the top wall, right corner
 
     game_over:          db 0        ; 0 = running, 1 = snake hit a wall
 
@@ -341,6 +350,10 @@ move_snake:
     mov si, [snake_length]
     dec si
     shl si, 1                   ; si = byte offset of the last segment
+    mov dx, [snake_rows + si]
+    mov [tail_row], dx          ; remember the tail position for growing
+    mov dx, [snake_cols + si]
+    mov [tail_col], dx
     push word [snake_rows + si] ; row of tail
     push word [snake_cols + si] ; col of tail
     push word 0x0720            ; a blank space
@@ -378,6 +391,158 @@ move_snake:
     pop dx
     pop cx
     pop bx
+    pop ax
+    ret
+
+;  Draws the border around the screen: row 0, row 24, col 0, col 79.
+draw_walls:
+    push ax
+    push bx
+
+    mov ah, [wall_attr]
+    mov al, [wall_char]         ; ax = wall cell (draw_cell keeps ax safe)
+
+    xor bx, bx                  ; bx = column, 0..79
+.horizontal:
+    push 0                      ; top wall: row 0
+    push bx
+    push ax
+    call draw_cell
+    push 24                     ; bottom wall: row 24
+    push bx
+    push ax
+    call draw_cell
+    inc bx
+    cmp bx, 80
+    jne .horizontal
+
+    mov bx, 1                   ; bx = row, 1..23 (corners are already drawn)
+.vertical:
+    push bx                     ; left wall: col 0
+    push 0
+    push ax
+    call draw_cell
+    push bx                     ; right wall: col 79
+    push 79
+    push ax
+    call draw_cell
+    inc bx
+    cmp bx, 24
+    jne .vertical
+
+    pop bx
+    pop ax
+    ret
+
+
+;  Adds 5 to the score.
+update_score:
+    add word [score], 5
+    ret
+
+
+;  Shows "Score:" and the number on the top wall, right corner.
+;  Label of the word score is from column 67 to column 72 and the number starts at column 73.
+display_score:
+    push ax
+    push bx
+    push cx
+    push dx
+    push si
+
+    ; draw the label, one character at a time
+    xor si, si                  ; si = index into score_label
+    mov cx, 6                   ; 6 characters
+.label_loop:
+    mov al, [score_label + si]
+    mov ah, 0x0F                ; bright white
+    mov dx, 67
+    add dx, si                  ; dx = column for this character
+    push 0                      ; row 0
+    push dx                     ; col
+    push ax                     ; cell
+    call draw_cell
+    inc si
+    loop .label_loop
+
+    ; splits the score into decimal digits (last digit comes out first)
+    mov ax, [score]
+    mov bx, 10
+    xor cx, cx                  ; cx = number of digits
+.split:
+    xor dx, dx
+    div bx                      ; ax = score / 10, dx = last digit
+    push dx                     ; keep the digit on the stack
+    inc cx
+    cmp ax, 0
+    jne .split
+
+    ; pops the digits back so now the first digit comes out first
+    mov si, 73                  ; si = column of the first digit
+.print:
+    pop ax                      ; al = digit 0..9
+    add al, '0'                 ; convert to ASCII
+    mov ah, 0x0E                ; yellow
+    push 0                      ; row 0
+    push si                     ; col
+    push ax                     ; cell
+    call draw_cell
+    inc si
+    loop .print
+
+    pop si
+    pop dx
+    pop cx
+    pop bx
+    pop ax
+    ret
+
+
+;  Gives the snake one more segment, at the spot the tail just left.
+grow_snake:
+    push ax
+    push si
+
+    mov si, [snake_length]
+    shl si, 1                   ; si = byte offset of the new last segment
+    mov ax, [tail_row]
+    mov [snake_rows + si], ax
+    mov ax, [tail_col]
+    mov [snake_cols + si], ax
+    inc word [snake_length]
+
+    push word [tail_row]        ; draw it again cause move_snake had erased it
+    push word [tail_col]
+    mov ah, [snake_attr]
+    mov al, [snake_char]
+    push ax
+    call draw_cell
+
+    pop si
+    pop ax
+    ret
+
+
+;  If the head is on the fruit then grow, add score, show score and place a new fruit.
+check_fruit_eaten:
+    push ax
+
+    mov ax, [snake_rows]        ; head row
+    cmp ax, [fruit_row]
+    jne .done                   ; different row, not eaten
+    mov ax, [snake_cols]        ; head column
+    cmp ax, [fruit_col]
+    jne .done                   ; different column, not eaten
+
+    call grow_snake
+    call update_score
+    call display_score
+    call get_fruit_position     ; after grow_snake, so it avoids the new tail too
+    push word [fruit_row]
+    push word [fruit_col]
+    call draw_fruit
+
+.done:
     pop ax
     ret
 
@@ -429,11 +594,14 @@ main:
     push word [fruit_col]           ; col
     call draw_fruit
 
+    call display_score             ; Shows score = 0 at the start
+
 .game_loop:
     push 2                          ; waits 2 ticks (about 0.1 s) between moves
     call delay
     call get_direction              ; checks if the player pressed an arrow key?
     call move_snake                 ; move one step
+    call check_fruit_eaten
     cmp byte [game_over], 1
     jne .game_loop                  ; keep going until a wall is hit
 
